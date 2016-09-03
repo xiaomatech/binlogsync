@@ -5,7 +5,10 @@ from pymysqlreplication.row_event import WriteRowsEvent, UpdateRowsEvent, Delete
 from binlogsync.event.stream import MysqlEventStream
 from binlogsync.handler.base import IEventHandler
 from binlogsync.log import get_logger
-
+from threading import Thread
+import gevent
+from gevent import monkey
+monkey.patch_all()
 
 class MysqlEventProcessor(object):
     def __init__(self, ev_stream, ev_handler, dump_interval=10):
@@ -22,7 +25,7 @@ class MysqlEventProcessor(object):
         self.sleep_interval = 1
 
     def sleep_by_eof(self):
-        time.sleep(self.sleep_interval)
+        gevent.sleep(self.sleep_interval)
         if self.sleep_interval < 16:
             self.sleep_interval *= 2
 
@@ -51,11 +54,17 @@ class MysqlEventProcessor(object):
                 self.reset_sleep_interval()
 
                 if isinstance(ev, WriteRowsEvent):
-                    self.ev_handler.on_insert_raw(ev_id, ev)
+                    #self.ev_handler.on_insert_raw(ev_id, ev)
+                    insert_thread = Thread(target=self.ev_handler.on_insert_raw,name='on_insert_raw%s'%ev_id,args=(ev_id,ev))
+                    insert_thread.start()
                 elif isinstance(ev, UpdateRowsEvent):
-                    self.ev_handler.on_update_raw(ev_id, ev)
+                    #self.ev_handler.on_update_raw(ev_id, ev)
+                    update_thread = Thread(target=self.ev_handler.on_update_raw,name='on_update_raw%s'%ev_id,args=(ev_id,ev))
+                    update_thread.start()
                 elif isinstance(ev, DeleteRowsEvent):
-                    self.ev_handler.on_delete_raw(ev_id, ev)
+                    #self.ev_handler.on_delete_raw(ev_id, ev)
+                    delete_thread = Thread(target=self.ev_handler.on_delete_raw,name='on_delete_raw%s'%ev_id,args=(ev_id,ev))
+                    delete_thread.start()
                 else:
                     # currently, we don't have implementations for these events
                     logger.debug('No handler for event %s with event type %s.',
