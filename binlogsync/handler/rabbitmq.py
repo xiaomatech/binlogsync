@@ -6,13 +6,12 @@ from datetime import datetime
 from pytz import timezone
 from binlogsync.event.row_wrapper import InsertEventRow, UpdateEventRow, DeleteEventRow
 from binlogsync.utils.json_encoder import make_json_encoder_default
-from kafka import KafkaClient, SimpleProducer
+import pika
 
 
-class MysqlEvKafkaHandler(IEventHandler):
+class MysqlEvRabbitmqHandler(IEventHandler):
     def __init__(self,
-                 hosts=None,
-                 kafka_producer=None,
+                 rabbitmq_config=None,
                  ev_tz='Asia/Shanghai',
                  dt_col_tz='Asia/Shanghai',
                  topic_func=None,
@@ -22,30 +21,20 @@ class MysqlEvKafkaHandler(IEventHandler):
         :param ev_tz: timezone for serializing the event timestamp
         :param dt_col_tz: TIMESTAMP and DATETIME columns in MySQL also gives a naive datetime object,
                           timezone info is also need for serializing
-        :param hosts: lists of kafka hosts like
-                      ["127.0.0.2:9092", "127.0.0.3:9092"]
-        :param kafka_producer: if you want to control kafka producer more precisely,
-                               you may give a kafka producer here,
-                               if not given, a sync simple producer will be created with hosts param
-                               be CAUTIOUS about using async mode for kafka producer as
-                               the messages in its async sending queue may be LOST
-                               if signal SIGKILL received.
+        :param rabbitmq_config:
         :param topic_func: the function must receive 2 params(schema, table) and return a string
         :param split_row: if set to True, handler will split affected rows into messages,
                           each message contains only one row with "msg_key":"<ev_id>#<row_index>"
                           otherwise, handler just send one message for one event containing all affected rows,
                           each message has the key "ev_id":"<ev_id>" with "affected_rows[]"
         """
-        if kafka_producer:
-            self.kafka_producer = kafka_producer
-        elif isinstance(hosts, list):
-            host_str = ','.join(hosts)
-            self.kafka_producer = SimpleProducer(
-                KafkaClient(host_str),
-                async=False,
-                req_acks=SimpleProducer.ACK_AFTER_CLUSTER_COMMIT,
-                ack_timeout=2000, )
-        else:
+        try:
+            self.rabbitmq_config = rabbitmq_config
+            self.rmq_conn = pika.BlockingConnection(pika.ConnectionParameters(rabbitmq_config))
+            self.channel = self.rmq_conn.channel()
+            # 定义交换机
+            self.channel.exchange_declare(exchange=self.rabbitmq_config.get('exchange'), type=self.rabbitmq_config.get('exchange_type'))
+        except :
             raise Exception('Invalid args for create kafka handler instance')
 
         if callable(topic_func):
@@ -93,6 +82,7 @@ class MysqlEvKafkaHandler(IEventHandler):
             topic = self.topic_func(schema=schema, table=table)
         else:
             topic = 'sync_' + schema + '_' + table
+        self.channel.queue_declare(queue=topic)
         if self.split_row:
             msg_list = []
             for row_index, row in enumerate(affected_rows):
@@ -101,7 +91,10 @@ class MysqlEvKafkaHandler(IEventHandler):
                 msg_list.append(json.dumps(msg,
                                            default=self.json_encoder_default))
 
-            self.kafka_producer.send_messages(topic, *msg_list)
+                #将消息发送到交换机
+                self.channel.basic_publish(exchange=self.rabbitmq_config.get('exchange'),
+                                            routing_key=self.rabbitmq_config.get('routing_key_prefix'),
+                                            body=msg_list)
         else:
             row_list = [self.to_dict(ev_id, ev_timestamp, schema, table, row)
                         for row in affected_rows]
@@ -114,8 +107,10 @@ class MysqlEvKafkaHandler(IEventHandler):
                 'affected_rows': row_list,
             }
             msg = json.dumps(msg_dict, default=self.json_encoder_default)
-            self.kafka_producer.send_messages(topic, self.gen_msg_key(ev_id),
-                                              msg)
+            #将消息发送到交换机
+            self.channel.basic_publish(exchange=self.rabbitmq_config.get('exchange'),
+                                       routing_key=self.rabbitmq_config.get('routing_key_prefix')+self.gen_msg_key(ev_id),
+                                       body=msg)
 
     def on_insert(self, ev_id, ev_timestamp, schema, table, affected_rows):
         self.send_msgs(ev_id, ev_timestamp, schema, table, affected_rows)
@@ -125,3 +120,6 @@ class MysqlEvKafkaHandler(IEventHandler):
 
     def on_delete(self, ev_id, ev_timestamp, schema, table, affected_rows):
         self.send_msgs(ev_id, ev_timestamp, schema, table, affected_rows)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.channel.close()

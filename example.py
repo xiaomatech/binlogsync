@@ -16,6 +16,14 @@ es_config = {'host':'','port':'','excludes_fields':['secret','password']}
 
 redis_config = {'host': 'localhost', 'port': 6379, 'db': 0}
 
+rabbitmq_config = {
+    'host':'172.16.3.88',
+    'exchange':'scheduler_rmq',
+    'exchange_type':'direct',
+    'queue':'scheduler_test',
+    'routing_key_prefix':'route'
+}
+
 from binlogsync.daemon import BinlogSyncWrapper
 
 #kafka
@@ -38,7 +46,7 @@ from binlogsync.handler.elasticsearch import MysqlEvElasticsearchHandler
 es_hdlr = MysqlEvElasticsearchHandler(config=es_config)
 
 es_sync = BinlogSyncWrapper(mysql_conn_settings=mysql_config,
-                               replication_server_id=11,
+                               replication_server_id=12,
                                event_handler=es_hdlr,
                                dump_file_path='/tmp/binlogsync_es.dmp',
                                table_filters=table_filters)
@@ -51,12 +59,22 @@ from binlogsync.handler.redis import MysqlEvRedisHandler
 redis_hdlr = MysqlEvRedisHandler(redis_config=redis_config)
 
 redis_sync = BinlogSyncWrapper(mysql_conn_settings=mysql_config,
-                            replication_server_id=11,
+                            replication_server_id=13,
                             event_handler=redis_hdlr,
                             dump_file_path='/tmp/binlogsync_redis.dmp',
                             table_filters=table_filters)
 redis_sync.run()
 
+
+#rabbitmq
+from binlogsync.handler.rabbitmq import MysqlEvRabbitmqHandler
+rabbit_hdlr = MysqlEvRabbitmqHandler(rabbitmq_config=rabbitmq_config)
+rabbit_sync = BinlogSyncWrapper(mysql_conn_settings=mysql_config,
+                               replication_server_id=14,
+                               event_handler=rabbit_hdlr,
+                               dump_file_path='/tmp/binlogsync_rabbitmq.dmp',
+                               table_filters=table_filters)
+rabbit_sync.run()
 
 
 # console
